@@ -14,6 +14,7 @@ import type {
 import { getStreamingPartialJson, setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { wrapLeakedThinkingStream } from "@oh-my-pi/pi-ai/utils/leaked-thinking-stream";
+import { presentNarrationAsAnswer } from "@oh-my-pi/pi-ai/utils/narration";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { withOfficialAnthropicEndpoint } from "./helpers";
 
@@ -949,7 +950,7 @@ describe("leaked thinking healing through stream()", () => {
 		return Object.assign(fn, { preconnect: fetch.preconnect });
 	}
 
-	function anthropicThinkingFetch(): FetchImpl {
+	function anthropicThinkingFetch(signature = "sig_thinking"): FetchImpl {
 		const body = [
 			sseFrame("message_start", {
 				type: "message_start",
@@ -968,7 +969,7 @@ describe("leaked thinking healing through stream()", () => {
 			sseFrame("content_block_delta", {
 				type: "content_block_delta",
 				index: 0,
-				delta: { type: "signature_delta", signature: "sig_thinking" },
+				delta: { type: "signature_delta", signature },
 			}),
 			sseFrame("content_block_stop", { type: "content_block_stop", index: 0 }),
 			sseFrame("message_delta", {
@@ -1102,6 +1103,29 @@ describe("leaked thinking healing through stream()", () => {
 				thinkingSignature: "sig_thinking",
 			},
 		]);
+	});
+
+	/** The smallest Anthropic signature whose cleartext header names the block kind `narration`. */
+	function narrationSignature(): string {
+		const kind = Buffer.from("narration");
+		const header = [0x42, kind.length, ...kind];
+		const envelope = [0x0a, header.length, ...header];
+		return Buffer.from([0x12, envelope.length, ...envelope]).toString("base64");
+	}
+
+	it("presents narration from a proxied Anthropic endpoint as answer text", async () => {
+		// The provider marks a block as narration only when its signature completes,
+		// after the healing wrapper has already projected the block.
+		const result = await stream(
+			anthropicModel({ provider: "zai", baseUrl: "https://api.z.ai/api/anthropic" }),
+			context,
+			{
+				apiKey: "test",
+				fetch: anthropicThinkingFetch(narrationSignature()),
+			},
+		).result();
+
+		expect(presentNarrationAsAnswer(result).content).toEqual([{ type: "text", text: "Summary prefix summary tail" }]);
 	});
 
 	it("replays native web-search history on a custom Anthropic continuation", async () => {

@@ -23,8 +23,8 @@
  * fences, so wrapping a provider that already heals (or wrapping twice) is a
  * harmless pass-through. Signatures are load-bearing for Google/Gemini/Vertex
  * thought round-tripping, so text sub-blocks carry the source `textSignature`,
- * forwarded thinking blocks their `thinkingSignature` and `summary` state, and forwarded tool calls
- * their `thoughtSignature`.
+ * forwarded thinking blocks their `thinkingSignature`, `summary` and `narration` state, and
+ * forwarded tool calls their `thoughtSignature`.
  *
  * Modeled on {@link wrapInbandToolStream} / `InbandStreamProjector` in
  * `../dialect/owned-stream.ts`, minus all in-band tool-call grammar: tool-call
@@ -73,6 +73,7 @@ function syncToolCall(target: StreamingToolCall, source: StreamingToolCall): voi
 function adoptThinkingState(target: ThinkingContent, source: ThinkingContent | undefined): void {
 	if (source?.thinkingSignature !== undefined) target.thinkingSignature = source.thinkingSignature;
 	if (source?.summary !== undefined) target.summary = source.summary;
+	if (source?.narration !== undefined) target.narration = source.narration;
 }
 
 /**
@@ -238,7 +239,7 @@ class LeakedThinkingProjector {
 		this.#apply(this.#healer.feed(delta), this.#lastTextSignature, srcIndex);
 	}
 
-	/** Forward a native thinking delta, preserving its source block identity, signature and summary state. */
+	/** Forward a native thinking delta, preserving its source block identity and signature, summary and narration state. */
 	thinking(srcIndex: number, delta: string, source: ThinkingContent | undefined): void {
 		let index = this.#thinkingBlocks.get(srcIndex);
 		if (index === undefined) {
