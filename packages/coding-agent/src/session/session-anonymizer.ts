@@ -1644,14 +1644,26 @@ export class SessionAnonymizer {
 		let previousWord = "";
 		let descriptorNext = false;
 		let optionsEnded = false;
-		for (const token of lexShellCommand(value)) {
+		const tokens = lexShellCommand(value);
+		for (let index = 0; index < tokens.length; index++) {
+			const token = tokens[index];
 			if (token.kind === "separator") {
 				out += token.raw;
-				// The shared lexer splits `2>&1` at `&`; the word after a trailing `>`/`<` is a descriptor.
-				descriptorNext = token.raw === "&" && /[<>]$/.test(previousWord);
+				// The shared lexer splits redirections at `&` and `|`: `2>&1`, `<&-`, `>|out`, `&>out`.
+				const afterRedirect = /[<>]$/.test(previousWord);
+				// The separator also holds the blanks after it (`>| out`, `2>& -`); a blank before it is a pipe or `&`.
+				const operator = token.raw.trimEnd();
+				// `2>&1`, `>&2`, `<&-`: the word after a trailing `>`/`<` is a descriptor.
+				descriptorNext = operator === "&" && afterRedirect;
+				// `>|out` forces an overwrite; its operand is the path.
+				const clobber = operator === "|" && afterRedirect;
+				// `&>out` and `&>>out` send both streams to a file; the `&` does not end the command.
+				const next = tokens[index + 1];
+				const bothStreams = next?.kind === "word" && next.raw.startsWith(">") && /(?:^|[^&])&$/.test(token.raw);
+				const boundary = bothStreams ? token.raw.slice(0, -1) : token.raw;
 				if (descriptorNext) {
 					redirectTarget = false;
-				} else if (/[\n;&|()]/.test(token.raw)) {
+				} else if (!clobber && /[\n;&|()]/.test(boundary)) {
 					commandStart = true;
 					program = undefined;
 					optionsEnded = false;
@@ -1660,7 +1672,8 @@ export class SessionAnonymizer {
 			}
 			const word = token.raw;
 			previousWord = word;
-			if (descriptorNext && /^\d+$/.test(word)) {
+			// A descriptor number, or `-` to close the descriptor.
+			if (descriptorNext && /^(?:\d+|-)$/.test(word)) {
 				descriptorNext = false;
 				out += word;
 				continue;

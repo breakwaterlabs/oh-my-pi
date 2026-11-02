@@ -219,6 +219,31 @@ describe("SessionAnonymizer", () => {
 		);
 	});
 
+	test("keeps redirections split at `&` or `|` inside the command they belong to", () => {
+		const anonymizer = new SessionAnonymizer();
+		const acme = anonymizer.placeholder("acme");
+		// `2>&-` and `<&-` close a descriptor; `-` is not a literal.
+		expect(anonymizer.command("git log 2>&- | grep acme")).toBe(`git log 2>&- | grep ${acme}`);
+		expect(anonymizer.command("git log <&- --oneline")).toBe("git log <&- --oneline");
+		// `&>` and `>|` do not start a new command: the flags after the file stay git's flags.
+		const both = anonymizer.command("git log &>acme/out.txt --oneline");
+		expect(both).toBe(`git log &>${anonymizer.path("acme/out.txt")} --oneline`);
+		const clobber = anonymizer.command("git log >|acme/out.txt --oneline");
+		expect(clobber).toBe(`git log >|${anonymizer.path("acme/out.txt")} --oneline`);
+		// A blank after the operator does not change it.
+		expect(anonymizer.command("git log >| acme/out.txt --stat")).toBe(
+			`git log >| ${anonymizer.path("acme/out.txt")} --stat`,
+		);
+		expect(anonymizer.command("git log 2>& - --oneline")).toBe("git log 2>& - --oneline");
+		// `&&` and a spaced `&` still end the command.
+		expect(anonymizer.command("git log && >out.txt --oneline")).toBe(
+			`git log && >${anonymizer.path("out.txt")} ${anonymizer.placeholder("--oneline")}`,
+		);
+		expect(anonymizer.command("git log & >out.txt --oneline")).toBe(
+			`git log & >${anonymizer.path("out.txt")} ${anonymizer.placeholder("--oneline")}`,
+		);
+	});
+
 	test("exports only allowlisted fields; extension payloads and unknown fields stay opaque", () => {
 		const anonymizer = new SessionAnonymizer();
 		const call = (id: string, name: string, args: Record<string, unknown>) => ({
