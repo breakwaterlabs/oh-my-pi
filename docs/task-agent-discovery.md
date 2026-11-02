@@ -161,6 +161,8 @@ Because bundled parsing uses `level: "fatal"`, unrecoverable YAML errors or inva
 
 The OMP extension-package surface is disabled when the `omp-plugins` capability provider is disabled. Marketplace roots are excluded from `listOmpExtensionRoots` and enter only through the separately gated Claude-plugin path.
 
+`disabledExtensions` entries `agent:<name>` hide non-bundled agents during discovery, before the first-wins dedup. Hidden agents are returned in `DiscoveryResult.disabledAgents` for `/extensions`. Bundled agents are never hidden by this list (the task tool depends on them); use `task.disabledAgents` for those.
+
 Claude-dialect plugin agents discard their frontmatter `model` so Claude aliases are not misread as OMP selectors. This applies to foreign Claude roots and packages whose manifest declares the Claude format, including OMP installs or `--plugin-dir` roots. OMP-native and Agent-Plugins-standard packages retain their model selectors.
 
 ## Merge and collision rules

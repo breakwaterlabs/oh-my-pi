@@ -21,12 +21,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
-import { isProviderEnabled, isUserSourceEnabled } from "../capability";
+import { boundSettings, isProviderEnabled, isUserSourceEnabled } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { findAllNearestProjectConfigDirs, getConfigDirs } from "../config";
 import { pluginUsesClaudeModelDialect } from "../discovery/agent-plugin-format";
 import { listClaudePluginRoots } from "../discovery/helpers";
 import { listOmpExtensionRoots } from "../discovery/omp-extension-roots";
+import { cfgDisabledExtensions } from "../extensibility/settings";
 import { loadBundledAgents, parseAgent } from "./agents";
 import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
 import type { AgentDefinition } from "./types";
@@ -36,21 +37,46 @@ const TASK_AGENT_CONFIG_SOURCE = ".omp";
 /** Result of agent discovery */
 export interface DiscoveryResult {
 	agents: AgentDefinition[];
+	/**
+	 * Non-bundled agents hidden by a `disabledExtensions` entry (`agent:<name>`), in
+	 * discovery order, so `/extensions` can list them and offer re-enabling.
+	 */
+	disabledAgents?: AgentDefinition[];
 	projectAgentsDir: string | null;
 	/** Agent directories searched, in precedence order (for "unknown agent" diagnostics). */
 	searchedDirs?: string[];
 }
 
+export interface DiscoverAgentsOptions {
+	/**
+	 * Disabled extension ids to apply instead of the bound settings' `disabledExtensions`.
+	 * `agent:<name>` entries hide a discovered agent; bundled agents are never hidden here.
+	 */
+	disabledExtensions?: readonly string[];
+}
+
+/**
+ * The `agent:<name>` entries of `disabledExtensions` that {@link discoverAgents} applies: the
+ * explicit list when given, else the bound settings' value.
+ */
+export function disabledAgentExtensionIds(disabledExtensions?: readonly string[]): string[] {
+	const settings = boundSettings();
+	const ids = disabledExtensions ?? (settings ? cfgDisabledExtensions.get(settings) : undefined) ?? [];
+	return ids.filter(id => id.startsWith("agent:"));
+}
+
 interface AgentDirectory {
 	dir: string;
 	source: AgentSource;
+	/** Capability provider that owns this root, recorded on each agent for `/extensions`. */
+	provider: string;
 	ignoreModel?: boolean;
 }
 
 /**
  * Load agents from a directory.
  */
-async function loadAgentsFromDir({ dir, source, ignoreModel }: AgentDirectory): Promise<AgentDefinition[]> {
+async function loadAgentsFromDir({ dir, source, provider, ignoreModel }: AgentDirectory): Promise<AgentDefinition[]> {
 	const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
 	const files = entries
 		.filter(entry => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".md"))
@@ -62,6 +88,7 @@ async function loadAgentsFromDir({ dir, source, ignoreModel }: AgentDirectory): 
 				.then(content => {
 					const agent = parseAgent(filePath, content, source, "warn");
 					if (ignoreModel) agent.model = undefined;
+					agent.provider = provider;
 					return agent;
 				})
 				.catch(error => {
@@ -82,11 +109,13 @@ async function loadAgentsFromDir({ dir, source, ignoreModel }: AgentDirectory): 
  * @param cwd - Current working directory for project agent discovery
  * @param home - Home directory for user and marketplace discovery
  * @param extensionRoots - Session-local extension roots (explicit + mode + configured)
+ * @param options - Explicit `disabledExtensions` override; defaults to the bound settings
  */
 export async function discoverAgents(
 	cwd: string,
 	home: string = os.homedir(),
 	extensionRoots?: EffectiveExtensionRoots,
+	options?: DiscoverAgentsOptions,
 ): Promise<DiscoveryResult> {
 	const resolvedCwd = path.resolve(cwd);
 
@@ -106,9 +135,9 @@ export async function discoverAgents(
 
 	const orderedDirs: AgentDirectory[] = [];
 	const project = projectDirs[0];
-	if (project) orderedDirs.push({ dir: project.path, source: "project" });
+	if (project) orderedDirs.push({ dir: project.path, source: "project", provider: "native" });
 	const user = userDirs[0];
-	if (user) orderedDirs.push({ dir: user.path, source: "user" });
+	if (user) orderedDirs.push({ dir: user.path, source: "user", provider: "native" });
 
 	// Extension-package agents use the same effective root set as sibling
 	// skills/hooks/tools, threaded whole so explicit roots and mode survive.
@@ -116,7 +145,7 @@ export async function discoverAgents(
 		? await listOmpExtensionRoots({ cwd: resolvedCwd, home, repoRoot: null, extensionRoots })
 		: [];
 	for (const root of packageRoots) {
-		orderedDirs.push({ dir: path.join(root.path, "agents"), source: root.level });
+		orderedDirs.push({ dir: path.join(root.path, "agents"), source: root.level, provider: "omp-plugins" });
 	}
 
 	// Load agents from Claude Code marketplace plugins (respects disabledProviders and opt-in).
@@ -150,12 +179,26 @@ export async function discoverAgents(
 		orderedDirs.push({
 			dir: path.join(plugin.path, "agents"),
 			source: plugin.scope === "project" ? "project" : "user",
+			provider: "claude-plugins",
 			ignoreModel: pluginModelDrops[index],
 		});
 	});
 
+	// `agent:<name>` in `disabledExtensions` hides a discovered agent before dedup, so a disabled
+	// agent never shadows a bundled or lower-precedence one of the same name. Bundled agents are
+	// exempt: the task tool and its prompts depend on them, and `task.disabledAgents` turns those off.
+	const disabledIds = new Set(disabledAgentExtensionIds(options?.disabledExtensions));
 	const seen = new Set<string>();
+	const seenDisabled = new Set<string>();
+	const disabledAgents: AgentDefinition[] = [];
 	const loadedAgents = (await Promise.all(orderedDirs.map(loadAgentsFromDir))).flat().filter(agent => {
+		if (disabledIds.has(`agent:${agent.name}`)) {
+			if (!seenDisabled.has(agent.name)) {
+				seenDisabled.add(agent.name);
+				disabledAgents.push(agent);
+			}
+			return false;
+		}
 		if (seen.has(agent.name)) return false;
 		seen.add(agent.name);
 		return true;
@@ -171,6 +214,7 @@ export async function discoverAgents(
 
 	return {
 		agents: [...loadedAgents, ...bundledAgents],
+		disabledAgents,
 		projectAgentsDir,
 		searchedDirs: orderedDirs.map(entry => entry.dir),
 	};

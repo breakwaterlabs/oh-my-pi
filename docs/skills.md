@@ -108,7 +108,7 @@ Capability dedup key is skill name; the first item with a given name wins in the
 `loadSkills()` applies these controls:
 
 - source toggles: `enableCodexUser`, `enableClaudeUser`, `enableClaudeProject`, `enablePiUser`, `enablePiProject`, `enableAgentsUser`, `enableAgentsProject`
-- `disabledExtensions` entries with `skill:<name>`
+- `disabledExtensions` entries with `skill:<name>` (`agent:<name>` entries do not affect skills; they hide task agents, see [Extension loading](./extension-loading.md#disable-specific-items-of-other-capabilities))
 - `ignoredSkills` (exclude; glob patterns)
 - `includeSkills` (include allowlist; glob patterns; empty means include all)
 

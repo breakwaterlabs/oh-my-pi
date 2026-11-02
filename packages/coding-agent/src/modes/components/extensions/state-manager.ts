@@ -19,11 +19,13 @@ import {
 	disableUserSource,
 	enableProvider,
 	enableUserSource,
+	getProviderInfo,
 	isProviderEnabled,
 	isUserSourceEnabled,
 	loadCapability,
 } from "../../../discovery";
 import { readDisabledServers, readEnabledServers } from "../../../mcp/config-writer";
+import { discoverAgents } from "../../../task/discovery";
 import { commandPreview } from "@oh-my-pi/pi-tui/overlays/extensions/inspector-model";
 import { inferMcpTransport } from "@oh-my-pi/pi-tui/overlays/extensions/mcp-runtime";
 import {
@@ -285,6 +287,36 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 		}
 	} catch (error) {
 		logger.warn("Failed to load context-files capability", { error: String(error) });
+	}
+
+	// Load task agents. Bundled agents cannot be disabled here, so only discovered ones are listed.
+	try {
+		const { agents, disabledAgents = [] } = await discoverAgents(cwd ?? process.cwd(), undefined, undefined, {
+			disabledExtensions: effectiveDisabledIds,
+		});
+		for (const agent of [...agents.filter(agent => agent.source !== "bundled"), ...disabledAgents]) {
+			const id = makeExtensionId("agent", agent.name);
+			const provider = agent.provider ?? "native";
+			const isDisabled = disabledExtensions.has(id);
+			extensions.push({
+				id,
+				kind: "agent",
+				name: agent.name,
+				displayName: agent.name,
+				description: agent.description,
+				path: agent.filePath ?? "",
+				source: {
+					provider,
+					providerName: getProviderInfo(provider)?.displayName ?? provider,
+					level: agent.source === "project" ? "project" : "user",
+				},
+				state: isDisabled ? "disabled" : "active",
+				disabledReason: isDisabled ? "item-disabled" : undefined,
+				raw: agent,
+			});
+		}
+	} catch (error) {
+		logger.warn("Failed to discover task agents", { error: String(error) });
 	}
 
 	return extensions;

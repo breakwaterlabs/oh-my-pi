@@ -193,6 +193,22 @@ The id carries no directory and no depth, so a `project` entry disables files of
 that name at every depth the discovery walk reaches. See
 [Context files](./context-files.md#disabling-a-single-context-file).
 
+Task agents use `agent:<name>`. Discovery drops a matching project, user,
+extension-package or marketplace-plugin agent before the first-wins name dedup,
+so a disabled agent no longer shadows a lower-precedence or bundled agent of the
+same name. Bundled agents (`task`, `scout`, `reviewer`, ...) are not affected,
+because the task tool depends on them; `task.disabledAgents` switches those off.
+`/extensions` lists discovered agents under "Agents" and toggles the same id;
+the task tool's agent list follows the toggle at once. An entry added to the
+settings file by hand reaches that list after `/reload-plugins` or a restart,
+but a task spawn of the agent is refused straight away, because the spawn
+re-runs discovery.
+
+```yaml
+disabledExtensions:
+   - agent:code-reviewer
+```
+
 ---
 
 ## Path and entry resolution

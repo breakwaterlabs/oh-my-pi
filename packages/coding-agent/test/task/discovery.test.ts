@@ -305,4 +305,40 @@ describe("discoverAgents", () => {
 		expect(agent).toBeDefined();
 		expect(agent?.model).toEqual(["@advisor", "@smol"]);
 	});
+
+	describe("disabledExtensions agent:<name>", () => {
+		async function writeProjectAgent(name: string): Promise<void> {
+			await fs.mkdir(path.join(projectDir, ".omp", "agents"), { recursive: true });
+			await fs.writeFile(path.join(projectDir, ".omp", "agents", `${name}.md`), agentMd(name, "pi/smol"));
+		}
+
+		test("hides a disabled plugin agent and reports it; a same-named skill id hides nothing", async () => {
+			enableProvider("claude-plugins");
+			await writeOmpMarketplacePlugin(tempHome, { agentName: "plugin-probe", model: "pi/smol", manifest: "omp" });
+			await writeProjectAgent("keep-me");
+
+			const { agents, disabledAgents } = await discoverAgents(projectDir, tempHome, undefined, {
+				disabledExtensions: ["agent:plugin-probe", "skill:keep-me"],
+			});
+			const names = agents.map(agent => agent.name);
+
+			expect(names).toContain("keep-me");
+			expect(names).not.toContain("plugin-probe");
+			expect(disabledAgents?.map(agent => [agent.name, agent.provider])).toEqual([
+				["plugin-probe", "claude-plugins"],
+			]);
+		});
+
+		test("a disabled agent stops shadowing the bundled agent of its name; bundled agents stay", async () => {
+			await writeProjectAgent("reviewer");
+
+			const { agents, disabledAgents } = await discoverAgents(projectDir, tempHome, undefined, {
+				disabledExtensions: ["agent:reviewer", "agent:task"],
+			});
+
+			expect(agents.find(agent => agent.name === "reviewer")?.source).toBe("bundled");
+			expect(agents.find(agent => agent.name === "task")?.source).toBe("bundled");
+			expect(disabledAgents?.map(agent => agent.name)).toEqual(["reviewer"]);
+		});
+	});
 });

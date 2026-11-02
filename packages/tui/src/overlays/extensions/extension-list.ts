@@ -653,6 +653,8 @@ export class ExtensionList implements Component {
 				return theme.icon.extensionContextFile;
 			case "instruction":
 				return theme.icon.extensionInstruction;
+			case "agent":
+				return theme.icon.agents;
 			default:
 				return theme.format.bullet;
 		}
@@ -761,6 +763,7 @@ export class ExtensionList implements Component {
 			"prompt",
 			"context-file",
 			"instruction",
+			"agent",
 		];
 
 		for (const kind of kindOrder) {
@@ -804,6 +807,8 @@ export class ExtensionList implements Component {
 				return "Context";
 			case "instruction":
 				return "Instructions";
+			case "agent":
+				return "Agents";
 			default:
 				return kind;
 		}

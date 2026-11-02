@@ -149,6 +149,7 @@ import {
 	cfgStatusLineTransparent,
 	cfgTreeFilterMode,
 } from "../settings";
+import { refreshAgentDiscovery } from "../../task";
 import { cfgTaskAgentModelOverrides } from "../../task/settings";
 
 /** First-use boundary for provider auth catalog and dialog components. */
@@ -613,6 +614,8 @@ export class SelectorController {
 				onMcpToolsChanged: tools => this.ctx.session.refreshMCPTools(tools),
 				browserMcpFilterEnabled: () =>
 					this.ctx.session.getEvalPreludes().some(definition => definition.name === "browser"),
+				refreshTaskAgents: () =>
+					refreshAgentDiscovery(this.ctx.sessionManager.getCwd(), this.ctx.session.effectiveExtensionRoots),
 			}),
 			terminalHeight: this.ctx.ui.terminal.rows,
 			toolSource: {

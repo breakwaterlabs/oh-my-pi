@@ -1,5 +1,5 @@
 import type { ExtensionDashboardRuntime } from "@oh-my-pi/pi-tui/overlays/extensions/extension-dashboard";
-import { getMCPConfigPath } from "@oh-my-pi/pi-utils";
+import { getMCPConfigPath, logger } from "@oh-my-pi/pi-utils";
 import { parseRuleAgents, parseRuleConditionAndScope } from "../../../capability/rule";
 import type { Settings } from "../../../config/settings";
 import { getAllProvidersInfo, isForeignUserProvider, isUserSourceEnabled } from "../../../discovery";
@@ -7,6 +7,7 @@ import type { CustomTool } from "../../../extensibility/custom-tools/types";
 import { setMcpServerEnabled } from "../../../mcp/config-writer";
 import type { MCPManager } from "../../../mcp/manager";
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL } from "../../../mcp/startup-events";
+import { disabledAgentExtensionIds } from "../../../task/discovery";
 import type { EventBus } from "../../../utils/event-bus";
 import { toolFileHeaderDescription } from "./inspector-runtime";
 import { applyMcpToggleRuntime } from "./mcp-runtime";
@@ -23,11 +24,21 @@ export function createExtensionDashboardRuntime(options: {
 	eventBus?: EventBus;
 	onMcpToolsChanged?: (tools: CustomTool[]) => Promise<void> | void;
 	browserMcpFilterEnabled?: () => boolean;
+	/** Rescan task agents after an `agent:<name>` toggle, so live task tools list the change. */
+	refreshTaskAgents?: () => Promise<void>;
 }): ExtensionDashboardRuntime {
-	const { cwd, settings, mcpManager, eventBus, onMcpToolsChanged, browserMcpFilterEnabled } = options;
+	const { cwd, settings, mcpManager, eventBus, onMcpToolsChanged, browserMcpFilterEnabled, refreshTaskAgents } =
+		options;
+	const agentIdsKey = (ids: readonly string[]) => disabledAgentExtensionIds(ids).sort().join("\n");
 	return {
 		getDisabledExtensions: () => cfgDisabledExtensions.get(settings),
-		setDisabledExtensions: ids => cfgDisabledExtensions.set(settings, ids),
+		setDisabledExtensions: ids => {
+			const agentsChanged = agentIdsKey(cfgDisabledExtensions.get(settings)) !== agentIdsKey(ids);
+			cfgDisabledExtensions.set(settings, ids);
+			if (agentsChanged && refreshTaskAgents) {
+				refreshTaskAgents().catch(error => logger.warn("Failed to refresh task agents", { error: String(error) }));
+			}
+		},
 		getProviders: () =>
 			getAllProvidersInfo().map(provider => ({
 				...provider,

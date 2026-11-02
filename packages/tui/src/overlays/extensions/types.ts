@@ -23,7 +23,8 @@ export type ExtensionKind =
 	| "instruction"
 	| "context-file"
 	| "hook"
-	| "slash-command";
+	| "slash-command"
+	| "agent";
 
 /**
  * Extension state (active, disabled, or shadowed).

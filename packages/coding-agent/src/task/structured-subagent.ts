@@ -41,7 +41,7 @@ import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
-import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
+import { type DiscoveryResult, disabledAgentExtensionIds, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess, type SubagentToolResult } from "./executor";
 import {
 	applyEligibleNestedPatches,
@@ -441,7 +441,8 @@ function preflightPerCallModel(
 
 /**
  * In-flight agent discovery, keyed by resolved cwd, the effective extension
- * roots and the provider/source toggles `discoverAgents` consults. Concurrent
+ * roots and the provider/source toggles and `agent:<name>` disabled ids
+ * `discoverAgents` consults. Concurrent
  * preflights (task batch items, eval `agent()` fan-out) share one disk scan;
  * the entry is dropped when the scan settles, so any later call rescans and
  * policy resolution stays as fresh as before. A toggle flipped mid-scan changes
@@ -458,6 +459,7 @@ function discoverAgentsShared(cwd: string, extensionRoots?: EffectiveExtensionRo
 		isProviderEnabled("claude-plugins"),
 		isUserSourceEnabled("claude-plugins"),
 		isUserSourceEnabled("claude"),
+		...disabledAgentExtensionIds(),
 	].join(",");
 	const key = `${path.resolve(cwd)}\0${policy}\0${JSON.stringify(extensionRoots ?? null)}`;
 	const existing = inflightDiscovery.get(key);

@@ -210,6 +210,8 @@ function getKindDisplayName(kind: ExtensionKind): string {
 			return "Hooks";
 		case "slash-command":
 			return "Slash Commands";
+		case "agent":
+			return "Agents";
 		default:
 			return kind;
 	}

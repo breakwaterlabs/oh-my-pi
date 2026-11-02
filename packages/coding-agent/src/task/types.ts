@@ -332,5 +332,7 @@ export interface AgentDefinition {
 	/** Advisor for spawned sessions of this agent: `true` = advise with the default advisor-role model, string = advise with that model pattern (optional `:level` suffix). Absent/`false` = no advisor. */
 	advisor?: boolean | string;
 	source: AgentSource;
+	/** Capability provider that supplied a discovered agent (`native`, `omp-plugins`, `claude-plugins`); unset for bundled and session agents. */
+	provider?: string;
 	filePath?: string;
 }

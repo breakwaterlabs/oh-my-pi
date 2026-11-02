@@ -3,10 +3,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type ContextFile, contextFileCapability } from "@oh-my-pi/pi-coding-agent/capability/context-file";
+import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capability/types";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initializeWithSettings, loadCapability } from "@oh-my-pi/pi-coding-agent/discovery";
 import { isShadowedExtension } from "@oh-my-pi/pi-tui/overlays/extensions/types";
+import { createExtensionDashboardRuntime } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/dashboard-runtime";
 import { loadAllExtensions } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/state-manager";
+import { refreshAgentDiscovery, TaskTool } from "@oh-my-pi/pi-coding-agent/task";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
 function restoreEnvValue(key: string, value: string | undefined): void {
@@ -161,5 +165,73 @@ describe("disabledExtensions runtime filtering", () => {
 		// The disabled loser must stay shadowed so the dashboard does not treat
 		// it as an independently toggleable row.
 		expect(gemini && isShadowedExtension(gemini)).toBe(true);
+	});
+
+	test("lists discovered task agents under the agent kind, a disabled one as disabled, and no bundled agents", async () => {
+		const agentsDir = path.join(tempDir, ".omp", "agents");
+		await fs.mkdir(agentsDir, { recursive: true });
+		for (const name of ["helper", "hide-me"]) {
+			await fs.writeFile(
+				path.join(agentsDir, `${name}.md`),
+				["---", `name: ${name}`, `description: ${name} agent.`, "---", `You are ${name}.`].join("\n"),
+			);
+		}
+
+		const dashboard = await loadAllExtensions(tempDir, ["agent:hide-me"]);
+		const agents = dashboard.filter(extension => extension.kind === "agent");
+
+		expect(agents.map(agent => [agent.id, agent.state, agent.source.level])).toEqual([
+			["agent:helper", "active", "project"],
+			["agent:hide-me", "disabled", "project"],
+		]);
+		expect(agents.find(agent => agent.id === "agent:hide-me")?.disabledReason).toBe("item-disabled");
+	});
+
+	test("toggling an agent in /extensions drops it from a live task tool's agent list", async () => {
+		const agentsDir = path.join(tempDir, ".omp", "agents");
+		await fs.mkdir(agentsDir, { recursive: true });
+		for (const name of ["helper", "hide-me"]) {
+			await fs.writeFile(
+				path.join(agentsDir, `${name}.md`),
+				["---", `name: ${name}`, `description: ${name} agent.`, "---", `You are ${name}.`].join("\n"),
+			);
+		}
+		const settings = Settings.isolated();
+		const release = initializeWithSettings(settings);
+		try {
+			const extensionRoots: EffectiveExtensionRoots = {
+				explicit: [],
+				mode: "merge",
+				configured: [],
+				configuredLevel: "user",
+			};
+			const session = {
+				cwd: tempDir,
+				hasUI: false,
+				settings,
+				effectiveExtensionRoots: () => extensionRoots,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+			} as unknown as ToolSession;
+			const tool = await TaskTool.create(session);
+			expect(tool.description).toContain("hide-me agent.");
+
+			let refreshed: Promise<void> | undefined;
+			const runtime = createExtensionDashboardRuntime({
+				cwd: tempDir,
+				settings,
+				refreshTaskAgents: () => {
+					refreshed = refreshAgentDiscovery(tempDir, extensionRoots);
+					return refreshed;
+				},
+			});
+			runtime.setDisabledExtensions([...runtime.getDisabledExtensions(), "agent:hide-me"]);
+			await refreshed;
+
+			expect(tool.description).not.toContain("hide-me agent.");
+			expect(tool.description).toContain("helper agent.");
+		} finally {
+			release();
+		}
 	});
 });
