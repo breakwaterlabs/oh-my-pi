@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { stream, streamSimple } from "@oh-my-pi/pi-ai/stream";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import {
 	createConfigHeaderResolver,
 	invalidateAllCommandConfigs,
@@ -60,6 +64,60 @@ describe("async config header materialization", () => {
 		});
 
 		expect(await resolver?.()).toEqual({ Authorization: "Bearer sekret", "X-Keep": "k" });
+	});
+
+	it("sends the explicit request key, not the configured key, as the authHeader bearer on the wire", async () => {
+		const configuredKey = `configured-${crypto.randomUUID()}`;
+		const requestKey = `request-${crypto.randomUUID()}`;
+		const keyEnvName = "OMP_TEST_LIVE_WIRE_KEY";
+		setEnv(keyEnvName, configuredKey);
+		const seen: Array<string | null> = [];
+		const server = Bun.serve({
+			port: 0,
+			hostname: "127.0.0.1",
+			fetch(req) {
+				seen.push(req.headers.get("authorization"));
+				return Response.json({ error: { message: "stop" } }, { status: 400 });
+			},
+		});
+		const tempDir = await TempDir.create("@omp-live-wire-");
+		let authStorage: AuthStorage | undefined;
+		try {
+			authStorage = await AuthStorage.create(tempDir.join("auth.db"));
+			const modelsPath = tempDir.join("models.json");
+			await Bun.write(
+				modelsPath,
+				JSON.stringify({
+					providers: {
+						wire: {
+							baseUrl: `http://127.0.0.1:${server.port}/v1`,
+							api: "openai-completions",
+							apiKey: keyEnvName,
+							authHeader: true,
+							models: [{ id: "wire-model", name: "Wire Model" }],
+						},
+					},
+				}),
+			);
+			const registry = new ModelRegistry(authStorage, modelsPath, {
+				cacheDbPath: tempDir.join("models.db"),
+				fetch: () => Promise.reject(new Error("offline")),
+			});
+			const model = registry.find("wire", "wire-model");
+			if (!model) throw new Error("Expected the configured wire model");
+			const context = { messages: [{ role: "user" as const, content: "hi", timestamp: Date.now() }] };
+
+			await streamSimple(model, context, { apiKey: requestKey }).result();
+			expect(seen).toEqual([`Bearer ${requestKey}`]);
+
+			seen.length = 0;
+			await stream(model, context, { apiKey: requestKey }).result();
+			expect(seen).toEqual([`Bearer ${requestKey}`]);
+		} finally {
+			server.stop(true);
+			authStorage?.close();
+			await tempDir.remove();
+		}
 	});
 
 	it("reads environment-backed values for every request", async () => {

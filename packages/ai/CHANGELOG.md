@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `stream` and `streamSimple` pass the request's API key to `model.resolveHeaders` as its second argument
 ### Added
 
 - Added opt-in standard Responses WebSockets for catalog-supported models, with incremental turns and session-scoped HTTP/SSE fallback; OMP enables them through settings ([#17354](https://github.com/can1357/oh-my-pi/pull/17354) by [@TatsukiMeng](https://github.com/TatsukiMeng))

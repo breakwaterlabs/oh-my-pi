@@ -7,8 +7,14 @@ const commandFailureRetryAt = new Map<string, number>();
 const commandInFlight = new Map<string, Promise<string | undefined>>();
 const commandGeneration = new Map<string, number>();
 
-/** Materialize request headers for models and discovery without property-access side effects. */
-export type ConfigHeaderResolver = (signal?: AbortSignal) => Promise<Record<string, string> | undefined>;
+/**
+ * Materialize request headers for models and discovery without property-access side effects.
+ * `apiKey` is the key the request is sent with, when the caller has one.
+ */
+export type ConfigHeaderResolver = (
+	signal?: AbortSignal,
+	apiKey?: string,
+) => Promise<Record<string, string> | undefined>;
 /** One raw header layer or previously composed request-time resolver. */
 export type ConfigHeaderSource = Record<string, string> | ConfigHeaderResolver | undefined;
 
@@ -174,14 +180,14 @@ export function createConfigHeaderResolver(
 ): ConfigHeaderResolver | undefined {
 	const active = sources.filter((source): source is Exclude<ConfigHeaderSource, undefined> => source !== undefined);
 	if (active.length === 0 && (!options?.authHeader || !options.apiKeyConfig)) return undefined;
-	return async signal => {
+	return async (signal, requestApiKey) => {
 		signal?.throwIfAborted();
 		const resolved: Record<string, string> = {};
 		let hasResolved = false;
 		for (const source of active) {
 			const next =
 				typeof source === "function"
-					? await untilAborted(signal, () => source(signal))
+					? await untilAborted(signal, () => source(signal, requestApiKey))
 					: await resolveConfigHeaders(source, signal);
 			signal?.throwIfAborted();
 			if (!next) continue;
@@ -192,7 +198,7 @@ export function createConfigHeaderResolver(
 		}
 		if (options?.authHeader && options.apiKeyConfig) {
 			const keyConfig = options.apiKeyConfig;
-			const apiKey = await untilAborted(signal, () => resolveConfigValue(keyConfig));
+			const apiKey = requestApiKey ?? (await untilAborted(signal, () => resolveConfigValue(keyConfig)));
 			if (apiKey) {
 				resolved.Authorization = `Bearer ${apiKey}`;
 				hasResolved = true;

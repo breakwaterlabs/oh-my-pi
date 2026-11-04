@@ -1751,8 +1751,10 @@ export interface Model<TApi extends Api = Api> {
 	 * Materialize config-backed headers immediately before a request. Catalog
 	 * inspection never invokes this hook; transports receive a cloned model
 	 * whose `headers` is a plain resolved record and whose hook is removed.
+	 * `apiKey` is the key the request is sent with, when the caller has one;
+	 * a derived bearer header (`authHeader: true`) carries it.
 	 */
-	resolveHeaders?: (signal?: AbortSignal) => Promise<Record<string, string> | undefined>;
+	resolveHeaders?: (signal?: AbortSignal, apiKey?: string) => Promise<Record<string, string> | undefined>;
 	/**
 	 * Streaming transport override. When `"pi-native"`, `streamSimple` routes
 	 * the request to the model's `baseUrl` via the auth-gateway's

@@ -790,6 +790,7 @@ function resolveVertexRequest(input: string | URL | Request): string | URL | Req
 function withResolvedModelHeaders<TApi extends Api>(
 	model: Model<TApi>,
 	signal: AbortSignal | undefined,
+	apiKey: string | undefined,
 	run: (resolvedModel: Model<TApi>) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
 	const resolveHeaders = model.resolveHeaders;
@@ -798,7 +799,7 @@ function withResolvedModelHeaders<TApi extends Api>(
 	const outer = new AssistantMessageEventStream();
 	void (async () => {
 		try {
-			const headers = await untilAborted(signal, () => resolveHeaders(signal));
+			const headers = await untilAborted(signal, () => resolveHeaders(signal, apiKey));
 			signal?.throwIfAborted();
 			const inner = run({ ...model, resolveHeaders: undefined, headers: headers ? { ...headers } : undefined });
 			for await (const event of inner) {
@@ -819,7 +820,9 @@ export function stream<TApi extends Api>(
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
 	if (model.resolveHeaders) {
-		return withResolvedModelHeaders(model, options?.signal, resolvedModel => stream(resolvedModel, context, options));
+		return withResolvedModelHeaders(model, options?.signal, options?.apiKey, resolvedModel =>
+			stream(resolvedModel, context, options),
+		);
 	}
 	if (!model.requiresGlyphTokenization) {
 		return withThinkingLoopGuard(model, options, opts =>
@@ -1356,7 +1359,9 @@ function streamSimpleRequest<TApi extends Api>(
 	}
 
 	if (model.resolveHeaders) {
-		return withResolvedModelHeaders(model, requestOptions.signal, resolvedModel =>
+		// A resolver key was resolved to a string above, so this is the key the request sends.
+		const apiKey = typeof requestOptions.apiKey === "string" ? requestOptions.apiKey : undefined;
+		return withResolvedModelHeaders(model, requestOptions.signal, apiKey, resolvedModel =>
 			streamSimpleRequest(resolvedModel, context, requestOptions),
 		);
 	}

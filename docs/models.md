@@ -694,9 +694,22 @@ in `models.yml` belong to tier 2, not this fallback tier.
 - Value is first treated as an environment variable name.
 - If the env var is unset or empty, the literal string is used as the token.
 
-If `authHeader: true` and provider `apiKey` is set, models get:
+For chat-generation calls through `stream` or `streamSimple`, `authHeader: true` with a provider
+`apiKey` also sends `Authorization: Bearer <key>`, where `<key>` is supplied for that call, before
+API-specific credential transformation (for example Cloudflare AI Gateway structured credentials).
+It is the resolved `apiKey`, or a key ranked ahead of it, such as `--api-key`. With
+`apiKey: MY_PROVIDER_API_KEY`:
 
-- `Authorization: Bearer <resolved-key>` header injected.
+| Run with                                        | Bearer sent                   |
+| ----------------------------------------------- | ----------------------------- |
+| `MY_PROVIDER_API_KEY=key-a omp`                 | `Authorization: Bearer key-a` |
+| `MY_PROVIDER_API_KEY=key-a omp --api-key key-b` | `Authorization: Bearer key-b` |
+
+On an API with its own key header, such as `x-goog-api-key` for `google-generative-ai`, both
+headers carry the same key.
+
+Automatic request-key forwarding is scoped to these streaming entrypoints; image-generation and
+web-search header resolution is separate.
 
 Resolution does not fail for a missing variable: with `apiKey: MY_PROVIDER_API_KEY`
 and `authHeader: true`, an unset or empty `MY_PROVIDER_API_KEY` produces
@@ -705,7 +718,7 @@ check that the variable is set and non-empty before starting OMP.
 
 [Command-resolved secrets](#command-resolved-secrets) do not use this literal
 fallback: a failing command or empty trimmed stdout resolves to no value, so it
-does not add a derived bearer header.
+adds no derived bearer header unless the request carries another key, such as `--api-key`.
 
 Keyless providers:
 

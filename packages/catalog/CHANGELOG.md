@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added an optional `apiKey` argument to `Model.resolveHeaders`: the key the request is sent with. A live row merged over a static one passes it to both rows' hooks
 - Added the `supports-message-threads` compat axis (`supportsMessageThreads`), enabled for Claude 4.5 and newer on the first-party Anthropic provider
 - Added a standard Responses WebSocket capability rule for explicit opt-in through OMP settings or SDK preferences, disabled by default ([#17354](https://github.com/can1357/oh-my-pi/pull/17354) by [@TatsukiMeng](https://github.com/TatsukiMeng))
 
