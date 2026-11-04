@@ -282,6 +282,12 @@ export function resolveMountedXdevExecutable(state: XdevState, name: string): To
 	return tool && state.decorateExecution ? state.decorateExecution(tool) : tool;
 }
 
+/** Docs + schema for a mounted tool, as `read xd://<tool>` renders them; undefined when the name is not mounted. */
+export function describeMountedXdevTool(state: XdevState, name: string): string | undefined {
+	const tool = resolveMountedXdevTool(state, name);
+	return tool && renderDocs(tool);
+}
+
 /** Mounted tools in presentation order, resolved from the canonical map. */
 export function listXdevTools(state: XdevState): Tool[] {
 	return [...state.mountedNames].flatMap(name => {

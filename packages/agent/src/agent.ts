@@ -278,6 +278,13 @@ export interface AgentOptions {
 	 */
 	suggestFallbackToolNames?: () => Iterable<string>;
 
+	/**
+	 * Usage docs for a tool reached through {@link resolveFallbackTool},
+	 * appended to its argument-validation error when the tool was not advertised.
+	 * A failing docs hook leaves the validation error and sibling dispatch intact.
+	 */
+	describeFallbackTool?: (name: string) => string | undefined;
+
 	/** Enable intent tracing schema injection/stripping in the harness. */
 	intentTracing?: boolean;
 	/** Schema description of the injected intent field; `PI_INTENT_DESC` overrides it. Default `concise intent`. */
@@ -495,6 +502,7 @@ export class Agent {
 	#speculativeToolExecution?: SpeculativeToolExecutionConfig;
 	#resolveFallbackTool?: (name: string, advertised: readonly AgentTool<any>[]) => AgentTool<any> | undefined;
 	#suggestFallbackToolNames?: () => Iterable<string>;
+	#describeFallbackTool?: (name: string) => string | undefined;
 	#intentTracing: boolean;
 	#intentDescription?: string;
 	#pruneToolDescriptions: boolean;
@@ -611,6 +619,7 @@ export class Agent {
 		this.#speculativeToolExecution = opts.speculativeToolExecution;
 		this.#resolveFallbackTool = opts.resolveFallbackTool;
 		this.#suggestFallbackToolNames = opts.suggestFallbackToolNames;
+		this.#describeFallbackTool = opts.describeFallbackTool;
 		this.#intentTracing = opts.intentTracing === true;
 		this.#intentDescription = opts.intentDescription;
 		this.#pruneToolDescriptions = opts.pruneToolDescriptions === true;
@@ -2047,6 +2056,7 @@ export class Agent {
 			speculativeToolExecution: this.#speculativeToolExecution,
 			resolveFallbackTool: this.#resolveFallbackTool,
 			suggestFallbackToolNames: this.#suggestFallbackToolNames,
+			describeFallbackTool: this.#describeFallbackTool,
 			intentTracing: this.#intentTracing,
 			intentDescription: this.#intentDescription,
 			pruneToolDescriptions: this.#pruneToolDescriptions,

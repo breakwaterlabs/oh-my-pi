@@ -2621,6 +2621,54 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		});
 	});
 
+	it("puts a mounted device's docs in the validation error of a bare-name call", async () => {
+		const tempDir = makeTempDir();
+		const deviceExtension: ExtensionFactory = pi => {
+			pi.registerTool({
+				name: "lookup_ticket",
+				label: "Lookup Ticket",
+				description: "Look up a ticket by its key.",
+				parameters: type({ ticket_key: "string" }),
+				async execute() {
+					return { content: [{ type: "text", text: "ticket" }] };
+				},
+			});
+		};
+
+		await withProviderAuth(["openai"], async () => {
+			const { session } = await createAgentSession({
+				...baseOptions(tempDir),
+				toolNames: ["read", "grep", "glob"],
+				extensions: [deviceExtension],
+			});
+			try {
+				expect(session.getMountedXdevToolNames()).toContain("lookup_ticket");
+				expect(session.getActiveToolNames()).not.toContain("lookup_ticket");
+
+				const toolCallId = "bare-device-1";
+				const mock = createMockModel({
+					responses: [
+						{ content: [{ type: "toolCall", id: toolCallId, name: "lookup_ticket", arguments: {} }] },
+						{ content: [{ type: "text", text: "done" }] },
+					],
+				});
+				vi.spyOn(session.agent, "streamFn").mockImplementation(mock.stream);
+
+				await session.prompt("hi");
+
+				const result = session.messages.find(
+					(message): message is ToolResultMessage =>
+						message.role === "toolResult" && message.toolCallId === toolCallId,
+				);
+				expect(result?.isError).toBe(true);
+				const text = result?.content.map(part => (part.type === "text" ? part.text : "")).join("") ?? "";
+				expect(text).toContain("Look up a ticket by its key.");
+			} finally {
+				await session.dispose();
+			}
+		});
+	});
+
 	it("runs advisor tools through the approval gate", async () => {
 		// The advisor's tools are built straight from `BUILTIN_TOOLS`, outside
 		// the registry loop that wraps everything else. Its own loop and its

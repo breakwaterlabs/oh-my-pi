@@ -466,6 +466,12 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * recoverable; never a dispatch source.
 	 */
 	suggestFallbackToolNames?: () => Iterable<string>;
+	/**
+	 * Usage docs for a tool reached through {@link resolveFallbackTool},
+	 * appended to its argument-validation error when the tool was not advertised.
+	 * A failing docs hook leaves the validation error and sibling dispatch intact.
+	 */
+	describeFallbackTool?: (name: string) => string | undefined;
 
 	/**
 	 * Enable intent tracing for tool calls.

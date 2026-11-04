@@ -1482,6 +1482,85 @@ describe("agentLoop with AgentMessage", () => {
 		expect(replayed?.content).toContainEqual(expect.objectContaining({ type: "toolCall", name: "recall" }));
 	});
 
+	it("appends fallback docs to a validation failure only for a tool the request did not advertise", async () => {
+		const toolSchema = type({ query: "string" });
+		const makeTool = (name: string): AgentTool<typeof toolSchema> => ({
+			name,
+			label: name,
+			description: "tool",
+			parameters: toolSchema,
+			async execute() {
+				return { content: [{ type: "text", text: "ran" }], details: undefined };
+			},
+		});
+		const device = makeTool("recall");
+		const advertised = makeTool("mcp__srv_search");
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [advertised] };
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "recall", arguments: {} },
+						{ type: "toolCall", id: "tool-2", name: "mcp__srv__search", arguments: {} },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			resolveFallbackTool: name =>
+				name === "recall" ? device : name === "mcp__srv__search" ? { ...advertised } : undefined,
+			describeFallbackTool: name => `DOCS FOR ${name}`,
+		};
+
+		const messages = await agentLoop([createUserMessage("go")], context, config, undefined, mock.stream).result();
+
+		const result = (id: string) => {
+			const message = messages.find((m): m is ToolResultMessage => m.role === "toolResult" && m.toolCallId === id);
+			const text = message?.content.map(c => (c.type === "text" ? c.text : "")).join("") ?? "";
+			return { isError: message?.isError, text };
+		};
+		expect(result("tool-1")).toMatchObject({ isError: true, text: expect.stringContaining("DOCS FOR recall") });
+		expect(result("tool-2").isError).toBe(true);
+		expect(result("tool-2").text).not.toContain("DOCS FOR");
+	});
+
+	it("preserves the validation error and runs valid siblings when fallback documentation throws", async () => {
+		const executions: string[] = [];
+		const echo = makeEchoTool(executions);
+		const device = { ...echo, name: "hidden_echo" };
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [echo] };
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "invalid", name: "hidden_echo", arguments: {} },
+						{ type: "toolCall", id: "valid", name: "echo", arguments: { value: "accepted" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			resolveFallbackTool: name => (name === "hidden_echo" ? device : undefined),
+			describeFallbackTool: () => {
+				throw new Error("docs unavailable");
+			},
+		};
+
+		const messages = await agentLoop([createUserMessage("go")], context, config, undefined, mock.stream).result();
+		const invalid = messages.find(
+			(message): message is ToolResultMessage => message.role === "toolResult" && message.toolCallId === "invalid",
+		);
+		expect(invalid?.isError).toBe(true);
+		expect(invalid && toolResultText(invalid)).toContain("value");
+		expect(executions).toEqual(["accepted"]);
+	});
+
 	it("hands resolveFallbackTool the request's advertised snapshot", async () => {
 		// A host that recovers a mis-spelled name must resolve it against the set
 		// THIS request advertised, not its own live tool state: an MCP

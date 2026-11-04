@@ -3084,7 +3084,8 @@ async function prepareToolCallDispatch(
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 ): Promise<Map<string, PreparedToolCall>> {
-	const { resolveFallbackTool, suggestFallbackToolNames, intentTracing, beforeToolCall } = config;
+	const { resolveFallbackTool, suggestFallbackToolNames, describeFallbackTool, intentTracing, beforeToolCall } =
+		config;
 	// Unique, non-empty ids first: everything below and every consumer of this
 	// message keys per-call state on `toolCall.id`.
 	ensureUniqueToolCallIds(assistantMessage, toolCallIdsDispatchedUnder(context));
@@ -3134,6 +3135,14 @@ async function prepareToolCallDispatch(
 				entry.args = parseFailed ? { __parseError: args.__parseError } : args;
 				entry.validationErrorMessage =
 					validationError instanceof Error ? validationError.message : String(validationError);
+				if (tool && !context.tools?.some(advertised => advertised.name === tool.name)) {
+					try {
+						const docs = describeFallbackTool?.(tool.name);
+						if (docs) entry.validationErrorMessage += `\n\n${docs}`;
+					} catch (error) {
+						logger.warn("Failed to describe fallback tool", { tool: tool.name, error: String(error) });
+					}
+				}
 				return undefined;
 			}
 		};
