@@ -19,9 +19,10 @@ import {
  * shape at the moment it becomes relevant (the preview reminder for
  * resolve/reject, the plan-mode prompt for propose).
  *
- * Rendering rides the write tool's xd:// delegation: renderers.ts keys the
- * resolve renderer under `resolve` and `reject` so device writes and legacy
- * `resolve` tool transcripts draw the same block.
+ * Rendering rides the write tool's xd:// delegation:
+ * `packages/tui/src/tools/index.ts` keys the resolve renderer under `resolve`
+ * and `reject` so device writes and legacy `resolve` tool transcripts draw the
+ * same block.
  */
 import type { AgentToolResult, CustomMessage } from "@oh-my-pi/pi-agent-core";
 

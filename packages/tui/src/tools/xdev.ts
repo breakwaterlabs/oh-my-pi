@@ -48,7 +48,7 @@ export interface XdevRenderDispatch {
 
 let rendererLookup: ((name: string) => ToolRenderer | undefined) | undefined;
 
-/** Wire the wrapped-renderer lookup. Called once by `renderers.ts`. */
+/** Wire the wrapped-renderer lookup. Called once by `tools/index.ts` (`toolRenderers`). */
 export function setXdevRendererLookup(lookup: (name: string) => ToolRenderer | undefined): void {
 	rendererLookup = lookup;
 }
