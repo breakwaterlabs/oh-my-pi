@@ -6,7 +6,7 @@ import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import { type CompactionPreparation, resolveThresholdTokens, shouldCompact } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runPrintMode } from "@oh-my-pi/pi-coding-agent/modes/print-mode";
@@ -477,6 +477,31 @@ describe("AgentSession auto-compaction progress guard", () => {
 		expect(promptSpy).toHaveBeenCalledTimes(1);
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(0);
+	});
+
+	it("does not start an autonomous turn when a compaction-end subscriber begins disposal", async () => {
+		activateOngoingGoal("dispose-at-compaction-end");
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
+		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 1000, contextWindow: 200000, percent: 0.5 });
+		const releaseStartup = Promise.withResolvers<void>();
+		session.holdForMemoryStartup(releaseStartup.promise);
+		const compactionDone = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type !== "auto_compaction_end") return;
+			session.beginDispose();
+			compactionDone.resolve();
+		});
+		const assistant = highUsageAssistant();
+		session.agent.emitExternalEvent({ type: "message_end", message: assistant });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistant] });
+		try {
+			await withTimeout(compactionDone.promise, 2_000, "Compaction did not finish");
+			await withTimeout(session.waitForIdle(), 2_000, "Disposed continuation entered the held startup wait");
+			expect(promptSpy).not.toHaveBeenCalled();
+		} finally {
+			releaseStartup.resolve();
+			await session.waitForIdle();
+		}
 	});
 
 	it("rebases the in-flight prompt snapshot so mid-run compaction is not misread as a dead-end", async () => {

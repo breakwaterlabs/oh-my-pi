@@ -1,7 +1,7 @@
 /** Session memory backend lifecycle and transcript resets. */
 
 import type { Agent, AgentTool } from "@oh-my-pi/pi-agent-core";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, withTimeout } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { all as allSettings, combine, type Derived } from "../config/registry";
 import type { Settings } from "../config/settings";
@@ -12,6 +12,9 @@ import type { MnemopiSessionState } from "../mnemopi/state";
 import { releaseSharpshooterSession } from "../sharpshooter/backend";
 
 import { cfgMemoryBackend } from "../memory-backend/settings";
+
+/** `notice` source of memory backend failures; print mode writes these to stderr. */
+export const MEMORY_NOTICE_SOURCE = "Memory";
 
 /** Id prefixes of the memory backends' own settings; their live edits reconfigure the active backend. */
 const MEMORY_BACKEND_SETTING_PREFIXES: readonly string[] = ["hindsight.", "mnemopi.", "sharpshooter."];
@@ -70,6 +73,10 @@ export class SessionMemory {
 	#queuedApply: { retainMnemopi: boolean; done: Promise<void> } | undefined;
 	/** Memory settings as last dispatched to `#applySettingsChange`; unset when live changes are disabled. */
 	#observedSettings: Record<string, unknown> | undefined;
+	/** Held start's error, not yet reported; a successful re-apply replaces that backend and discards it. */
+	#unreportedStartupFailure: string | undefined;
+	/** Bumped by each successful apply; a held start's failure counts only if no apply replaced its backend since. */
+	#appliedGeneration = 0;
 	/** Dispatched setting changes still running, including backend hooks that run outside the transition queue. */
 	readonly #settingsChanges = new Set<Promise<void>>();
 
@@ -157,13 +164,46 @@ export class SessionMemory {
 			await hook?.backend.applySettings?.(this.#host.memoryBackendSession(), hook.own);
 		} catch (error) {
 			logger.warn("Memory lifecycle: applying setting change failed", { changed, error: String(error) });
-			this.#host.emitNotice("error", `Failed to apply memory settings: ${String(error)}`, "Memory");
+			this.#host.emitNotice("error", `Failed to apply memory settings: ${String(error)}`, MEMORY_NOTICE_SOURCE);
 		}
 	}
 
 	/** Current serialized backend transition, used by prompt and disposal drains. */
 	get transition(): Promise<void> {
 		return this.#memoryBackendTransition;
+	}
+
+	/** Prompt and disposal drains wait for `start`. Its failure is kept for {@link reportStartupFailure}, never thrown. */
+	holdForStartup(start: Promise<void>): void {
+		const generation = this.#appliedGeneration;
+		const held = start.catch(error => {
+			logger.warn("Memory lifecycle: backend startup failed", { error: String(error) });
+			if (generation === this.#appliedGeneration) this.#unreportedStartupFailure = String(error);
+		});
+		this.#memoryBackendTransition = Promise.all([this.#memoryBackendTransition, held]).then(() => undefined);
+	}
+
+	/** Emits a held start's failure once; the start can fail before any UI subscribes, so the prompt drain reports it. */
+	reportStartupFailure(): void {
+		const failure = this.#unreportedStartupFailure;
+		if (failure === undefined) return;
+		this.#unreportedStartupFailure = undefined;
+		this.#host.emitNotice("error", `Failed to start memory backend: ${failure}`, MEMORY_NOTICE_SOURCE);
+	}
+
+	/** Waits at most `timeoutMs`; a transition that outlives it has its backend state released when it settles. */
+	async drainForDispose(timeoutMs: number): Promise<void> {
+		const transition = this.#memoryBackendTransition;
+		try {
+			await withTimeout(transition, timeoutMs, "Timed out draining memory backend transitions during dispose");
+		} catch (error) {
+			logger.warn("Memory backend transition still pending at dispose deadline", { error: String(error) });
+			void transition
+				.then(() => this.#disposeMemoryBackendState(false, false))
+				.catch(releaseError =>
+					logger.warn("Deferred memory backend release failed", { error: String(releaseError) }),
+				);
+		}
 	}
 
 	/** Base prompt captured before a per-turn memory promotion. */
@@ -344,6 +384,8 @@ export class SessionMemory {
 			await this.#refreshMemoryTools();
 			if (this.#host.isDisposed()) return;
 			await this.#host.refreshBaseSystemPrompt();
+			this.#appliedGeneration++;
+			this.#unreportedStartupFailure = undefined;
 		} catch (error) {
 			await this.#disposeMemoryBackendState(false);
 			if (!this.#host.isDisposed()) {

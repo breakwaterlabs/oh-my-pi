@@ -72,7 +72,7 @@ describe("createAgentSession auto-learn tool activation", () => {
 		expect(names).toContain("manage_skill");
 	});
 
-	it("initializes the selected memory backend before an auto-learn session can run", async () => {
+	it("installs the selected memory backend's session state once startup settles", async () => {
 		const { session } = await createAgentSession({
 			cwd: registryDir,
 			agentDir: registryDir,
@@ -90,6 +90,7 @@ describe("createAgentSession auto-learn tool activation", () => {
 		});
 		sessions.push(session);
 
+		await session.settleMemoryBackend();
 		expect(session.getHindsightSessionState()).toBeDefined();
 	});
 

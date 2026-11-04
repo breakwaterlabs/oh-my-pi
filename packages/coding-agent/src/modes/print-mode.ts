@@ -16,6 +16,7 @@ import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_
 import { COST_GATE_NOTICE_SOURCE } from "../session/cost-gate";
 import { CREDENTIAL_DISABLED_NOTICE_SOURCE } from "../session/credential-disabled-notice";
 import { isSilentAbort } from "../session/messages";
+import { MEMORY_NOTICE_SOURCE } from "../session/session-memory";
 import { flushTelemetryExport } from "../telemetry-export";
 import { parseSlashCommand, parseSubcommand } from "../slash-commands/helpers/parse";
 import type { SlashCommandRuntime } from "../slash-commands/types";
@@ -364,13 +365,13 @@ async function runPrintModeCore(
 			event.type === "notice" &&
 			(event.source === CREDENTIAL_DISABLED_NOTICE_SOURCE ||
 				event.source === COST_GATE_NOTICE_SOURCE ||
-				event.source === HINDSIGHT_NOTICE_SOURCE)
+				event.source === HINDSIGHT_NOTICE_SOURCE ||
+				event.source === MEMORY_NOTICE_SOURCE)
 		) {
-			// Text mode renders no session notices, but an automatic sign-out must not stay
-			// hidden behind a sibling account that quietly answers the prompt, a run must
-			// say when it crossed its cost thresholds, and a memory failure must not pass
-			// as an answer that used memories.
-			writeStderrLine(event.source === COST_GATE_NOTICE_SOURCE ? event.message : `Warning: ${event.message}`);
+			// These failures would otherwise be hidden by a successful text answer.
+			writeStderrLine(
+				event.source === COST_GATE_NOTICE_SOURCE ? event.message : `Warning: ${singleLine(event.message)}`,
+			);
 		} else if (event.type === "auto_retry_start") {
 			// Text mode shows only `Working...` while a turn runs; a turn stuck retrying
 			// (offline, an outage) must say why instead of looking like a slow answer.

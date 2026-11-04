@@ -5528,7 +5528,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		{
 			const originalDispose = session.dispose.bind(session);
 			let tinyClientReleased = false;
-			session.dispose = async () => {
+			session.dispose = async options => {
 				try {
 					// Reject new session work (eval starts) the moment disposal
 					// begins — the lifecycle await below opens an async gap before
@@ -5552,7 +5552,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
 						await AgentLifecycleManager.global().dispose();
 					}
-					await originalDispose();
+					await originalDispose(options);
 				} finally {
 					// The tiny-model client is a process singleton shared by every session.
 					// Only the session that owns process state drops its connections, once:
@@ -5769,22 +5769,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 		});
 
-		// Auto-learn can immediately trigger a private capture after the first real
-		// stop. When it is enabled at startup and a memory backend is selected,
-		// install that backend's per-session state first so the capture turn's
-		// `learn` tool observes the same initialized state as normal memory tools.
-		// Other sessions keep memory startup in the background to preserve the
-		// existing startup profile.
-		//
-		// The controller is installed for every top-level session and gates each
-		// stop on the live `autolearn.enabled`, so enabling or disabling it
-		// mid-session takes effect at the next stop; the tool registry reconciles
-		// `learn`/`manage_skill` on the same setting, and captures resolve those
-		// tools per run. The subscription lives for the session's lifetime; the
-		// reference is intentionally discarded (the listener retains it).
+		// The capture turn's learn tool must see the same initialized backend as the first prompt.
 		if (!restrictToolNames) {
 			if (cfgAutolearnEnabled.get(settings) && taskDepth === 0) {
-				await logger.time("startMemoryStartupTask", startMemoryBackend);
+				session.holdForMemoryStartup(logger.time("startMemoryStartupTask", startMemoryBackend));
 			} else {
 				void logger.time("startMemoryStartupTask", startMemoryBackend);
 			}

@@ -6435,6 +6435,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		this.#promptSetupAbortController?.abort();
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
@@ -6638,7 +6639,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			logger.warn("Post-prompt tasks still draining at dispose deadline", { error: String(error) });
 		}
 		await this.#drainAutolearnCapture();
-		await this.#memory.transition;
+		await this.#memory.drainForDispose(options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS);
 
 		const hindsightState = this.getHindsightSessionState();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
@@ -7470,6 +7471,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	applyMemoryBackend(options: { retainMnemopi?: boolean } = {}): Promise<void> {
 		if (!this.memoryEnabled) return Promise.resolve();
 		return this.#memory.applyMemoryBackend(options);
+	}
+
+	/** The next prompt waits for `start` and reports its failure; disposal waits only up to its drain deadline. */
+	holdForMemoryStartup(start: Promise<void>): void {
+		this.#memory.holdForStartup(start);
 	}
 
 	/** Resolves once every memory-setting edit so far, and the backend transitions it started, has settled. */
@@ -8356,7 +8362,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * {@link PromptDroppedError} instead.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
-		return this.#admitSubmission(() => this.#prompt(text, options));
+		const submittedWhileDisposing = this.#isDisposed;
+		return this.#admitSubmission(() => this.#prompt(text, options, submittedWhileDisposing));
 	}
 
 	/**
@@ -8401,7 +8408,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#toolChoiceQueue.removeByLabel("plan-mode-decision");
 	}
 
-	async #prompt(text: string, options?: PromptOptions): Promise<boolean> {
+	async #prompt(text: string, options: PromptOptions | undefined, submittedWhileDisposing: boolean): Promise<boolean> {
 		// Stamp the operator's submission instant before ANY async preprocessing —
 		// command execution, image normalization, vision-model description — so the
 		// prompt→yield delta includes the whole wait, whatever path the prompt takes.
@@ -8426,9 +8433,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// Locally handled commands and failed dispatches release that claim.
 			const release = await this.#maintenance.waitForMaintenanceCleanup();
 			const outcome: PromptDispatchOutcome = { sessionClaimed: false };
-			if (!release) return await this.#dispatchPrompt(text, options, submittedAt, outcome);
+			if (!release) return await this.#dispatchPrompt(text, options, submittedAt, outcome, submittedWhileDisposing);
 			try {
-				return await this.#dispatchPrompt(text, options, submittedAt, outcome);
+				return await this.#dispatchPrompt(text, options, submittedAt, outcome, submittedWhileDisposing);
 			} finally {
 				release(outcome.sessionClaimed);
 			}
@@ -8452,6 +8459,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		options: PromptOptions | undefined,
 		submittedAt: number,
 		outcome: PromptDispatchOutcome,
+		submittedWhileDisposing: boolean,
 	): Promise<boolean> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		// Slash/custom-command handling below rewrites `text`; keep the original
@@ -8533,9 +8541,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			return true;
 		}
 
-		// Captured before the normalization/vision-description awaits below so an
-		// abort() landing during either can be told apart from a fresh submission —
-		// see the drop check right after those awaits.
 		const preflightGeneration = this.#promptGeneration;
 		// Skip eager preludes when the user has already queued a directive
 		const hasPendingUserDirective = this.#toolChoiceQueue.inspect().includes("user-force");
@@ -8565,13 +8570,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			? await this.#buildImageDescriptionNotice(normalizedImages)
 			: undefined;
 
-		// abort() bumps #promptGeneration and can land while normalization and the
-		// vision-description call above are still in flight. #promptWithMessage below
-		// captures its own generation fresh at entry, so it cannot see this race and
-		// would dispatch a brand-new turn as if the abort never happened. Drop the
-		// prompt here instead — same contract as #promptWithMessage's own
-		// generation-race checks further down.
-		if (this.#promptGeneration !== preflightGeneration) {
+		// Turn setup captures fresh state, so reject cancellation that raced preprocessing here.
+		if (this.#promptGeneration !== preflightGeneration || (this.#isDisposed && !submittedWhileDisposing)) {
 			outcome.sessionClaimed = false;
 			if (!options?.synthetic) {
 				this.#promptDropped?.({ text: typedText, images: options?.images });
@@ -8654,6 +8654,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		try {
 			dispatched = await this.#promptWithMessage(message, expandedText, {
 				...options,
+				submittedWhileDisposing,
 				images: normalizedImages,
 				prependMessages:
 					preludeMessages.length > 0 ||
@@ -8713,10 +8714,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			onPromptQueued?: PromptOptions["onPromptQueued"];
 		},
 	): Promise<boolean> {
-		return this.#admitSubmission(() => this.#promptCustomMessage(message, options));
+		const submittedWhileDisposing = this.#isDisposed;
+		return this.#admitSubmission(() => this.#promptCustomMessage(submittedWhileDisposing, message, options));
 	}
 
 	async #promptCustomMessage<T = unknown>(
+		submittedWhileDisposing: boolean,
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
 		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted"> & {
 			queueChipText?: string;
@@ -8729,9 +8732,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// compaction or before a handoff commits its history.
 		const release = await this.#maintenance.waitForMaintenanceCleanup();
 		const outcome: PromptDispatchOutcome = { sessionClaimed: false };
-		if (!release) return this.#dispatchCustomPrompt(message, options, outcome);
+		if (!release) return this.#dispatchCustomPrompt(message, options, outcome, submittedWhileDisposing);
 		try {
-			return await this.#dispatchCustomPrompt(message, options, outcome);
+			return await this.#dispatchCustomPrompt(message, options, outcome, submittedWhileDisposing);
 		} finally {
 			release(outcome.sessionClaimed);
 		}
@@ -8747,6 +8750,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			  })
 			| undefined,
 		outcome: PromptDispatchOutcome,
+		submittedWhileDisposing: boolean,
 	): Promise<boolean> {
 		const textContent =
 			typeof message.content === "string"
@@ -8810,11 +8814,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const descriptionNotice = hasSkillImages
 			? await this.#buildSkillImageDescriptionNotice(preparedMessage)
 			: undefined;
-		// Same drop as #dispatchPrompt: abort() during normalization or the vision
-		// description must not publish the skill or start a turn afterwards.
-		if (hasSkillImages && (this.#promptGeneration !== preparationGeneration || this.#isDisposed)) {
+		// No setup controller exists while admission or image preprocessing awaits.
+		if (
+			(this.#isDisposed && !submittedWhileDisposing) ||
+			(hasSkillImages && (this.#promptGeneration !== preparationGeneration || this.#isDisposed))
+		) {
 			outcome.sessionClaimed = false;
-			return true;
+			return false;
 		}
 
 		// Image normalization and the vision-description call suspend after the
@@ -8840,6 +8846,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		outcome.sessionClaimed = await this.#promptWithMessage(preparedMessage, textContent, {
 			...options,
+			submittedWhileDisposing,
 			prependMessages:
 				keywordNotices.length > 0 || descriptionNotice
 					? [...keywordNotices, ...(descriptionNotice ? [descriptionNotice] : [])]
@@ -8973,8 +8980,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			});
 		}
 		for (let attempt = 0; attempt < AGENT_START_POLICY_MAX_ATTEMPTS; attempt++) {
-			await this.#memory.transition;
 			if (!isCurrent()) return cancelled;
+			// Abort ends the wait; the start keeps running for later prompts.
+			await untilAborted(signal, this.#memory.transition).catch(() => undefined);
+			if (!isCurrent()) return cancelled;
+			this.#memory.reportStartupFailure();
 			const sourceBase = this.#tools.baseSystemPrompt;
 			const basePreparation = await this.#tools.buildSystemPromptForAgentStart(prompt, isCurrent, signal);
 			if (!isCurrent()) return cancelled;
@@ -9063,12 +9073,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 			acceptTerminalEmptyStop?: boolean;
+			submittedWhileDisposing?: boolean;
 		},
 	): Promise<boolean> {
 		// Returns false when the prompt was dropped before reaching the agent —
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
 		// the typed text back to the host instead of losing it.
+		if (this.#isDisposed && !options?.submittedWhileDisposing) return false;
 		const inFlightEpoch = this.#beginInFlight();
 		// Client ownership is reserved by #prompt before dispatch preprocessing
 		// and released when its bracket settles; callers that reach this
