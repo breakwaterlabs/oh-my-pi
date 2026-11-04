@@ -13,7 +13,7 @@ import type { Rule } from "../../../capability/rule";
 import type { Skill } from "../../../capability/skill";
 import type { SlashCommand } from "../../../capability/slash-command";
 import type { CustomTool } from "../../../capability/tool";
-import type { SourceMeta } from "../../../capability/types";
+import type { EffectiveExtensionRoots, SourceMeta } from "../../../capability/types";
 import {
 	disableProvider,
 	disableUserSource,
@@ -63,10 +63,12 @@ function resolveState(
 	return { state: "active" };
 }
 
-/**
- * Load all extensions from all capabilities.
- */
-export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): Promise<Extension[]> {
+/** Post-startup loads must use the session's live extension roots. */
+export async function loadAllExtensions(
+	cwd?: string,
+	disabledIds?: string[],
+	extensionRoots?: EffectiveExtensionRoots,
+): Promise<Extension[]> {
 	const extensions: Extension[] = [];
 	const effectiveDisabledIds = disabledIds ?? [];
 	const disabledExtensions = new Set<string>(effectiveDisabledIds);
@@ -106,9 +108,12 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 		}
 	}
 
-	const loadOpts = cwd
-		? { cwd, includeDisabled: true, disabledExtensions: effectiveDisabledIds }
-		: { includeDisabled: true, disabledExtensions: effectiveDisabledIds };
+	const loadOpts = {
+		...(cwd ? { cwd } : {}),
+		includeDisabled: true,
+		disabledExtensions: effectiveDisabledIds,
+		...(extensionRoots ? { extensionRoots } : {}),
+	};
 
 	// Load skills
 	try {

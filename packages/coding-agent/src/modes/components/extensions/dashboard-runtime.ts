@@ -1,6 +1,7 @@
 import type { ExtensionDashboardRuntime } from "@oh-my-pi/pi-tui/overlays/extensions/extension-dashboard";
 import { getMCPConfigPath } from "@oh-my-pi/pi-utils";
 import { parseRuleAgents, parseRuleConditionAndScope } from "../../../capability/rule";
+import type { EffectiveExtensionRoots } from "../../../capability/types";
 import type { Settings } from "../../../config/settings";
 import { getAllProvidersInfo, isForeignUserProvider, isUserSourceEnabled } from "../../../discovery";
 import type { CustomTool } from "../../../extensibility/custom-tools/types";
@@ -23,8 +24,10 @@ export function createExtensionDashboardRuntime(options: {
 	eventBus?: EventBus;
 	onMcpToolsChanged?: (tools: CustomTool[]) => Promise<void> | void;
 	browserMcpFilterEnabled?: () => boolean;
+	/** The session's live extension roots, read on every load. */
+	extensionRoots?: () => EffectiveExtensionRoots;
 }): ExtensionDashboardRuntime {
-	const { cwd, settings, mcpManager, eventBus, onMcpToolsChanged, browserMcpFilterEnabled } = options;
+	const { cwd, settings, mcpManager, eventBus, onMcpToolsChanged, browserMcpFilterEnabled, extensionRoots } = options;
 	return {
 		getDisabledExtensions: () => cfgDisabledExtensions.get(settings),
 		setDisabledExtensions: ids => cfgDisabledExtensions.set(settings, ids),
@@ -34,7 +37,7 @@ export function createExtensionDashboardRuntime(options: {
 				userSourceEnabled: isUserSourceEnabled(provider.id),
 				foreignUserSource: isForeignUserProvider(provider.id),
 			})),
-		loadExtensions: disabledIds => loadAllExtensions(cwd, disabledIds),
+		loadExtensions: disabledIds => loadAllExtensions(cwd, disabledIds, extensionRoots?.()),
 		toggleProvider,
 		toggleUserSource,
 		async persistMcpToggle(name, enabled, sourcePath) {
@@ -57,6 +60,7 @@ export function createExtensionDashboardRuntime(options: {
 					enableProjectConfig: cfgMcpEnableProjectConfig.get(settings),
 					filterExa: true,
 					filterBrowser: browserMcpFilterEnabled?.() ?? false,
+					extensionRoots: extensionRoots?.(),
 				},
 				onStatus: event => eventBus?.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, event),
 			}),

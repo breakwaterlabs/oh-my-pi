@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `/status` lists the rules, skills, commands and tools of extension packages that the session loads from an `extensions:` entry in a `--config` or `PI_CONFIG_FILES` overlay, not only those in the saved config files
 ### Added
 
 - Added the default-off `providers.openaiResponsesWebsockets` setting for catalog-supported standard Responses models, independently of Codex; model/request `false` always disables it ([#17354](https://github.com/can1357/oh-my-pi/pull/17354) by [@TatsukiMeng](https://github.com/TatsukiMeng))
