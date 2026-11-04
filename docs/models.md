@@ -672,7 +672,31 @@ Extensions can register providers at runtime (`pi.registerProvider(...)`), inclu
 - custom stream handler registration for new API IDs
 - custom OAuth provider registration
 - `fetchDynamicModels` for a credential-aware live roster (cached with a default 24-hour TTL)
-- custom usage reporting and OAuth `modifyModels` projections reapplied after catalog rebuilds
+- custom usage reporting and OAuth `modifyModels` / `modifyProviderModels` projections reapplied after catalog rebuilds
+
+### Model projection hooks
+
+`oauth.modifyModels(models, credentials)` and `oauth.modifyProviderModels(models, credentials)` rewrite models for credential-aware routing, such as pointing a provider's models at an account-specific URL. They require a non-empty bootstrap `models` list at registration and run only while the provider has a stored OAuth credential. A provider registers one of the two; registering both throws.
+
+- `modifyModels` receives the whole catalog and may change any provider's rows. Registering it builds the full catalog (every provider's bundled and cached models), and a lookup for a single provider still composes and projects the full catalog.
+- `modifyProviderModels` receives only the registering provider's rows. Its result replaces those rows in place; rows it returns for other providers are ignored. Registering it does not build the full catalog, and a lookup for another provider does not run it.
+
+```typescript
+pi.registerProvider("my-gateway", {
+	baseUrl: "https://gateway.contoso.example/v1",
+	api: "openai-completions",
+	models: [/* bootstrap rows */],
+	oauth: {
+		name: "My Gateway",
+		login: async callbacks => loginToGateway(callbacks),
+		// Route this provider's models to the endpoint the signed-in account was issued.
+		modifyProviderModels: (models, credentials) =>
+			models.map(model => ({ ...model, baseUrl: credentials.apiEndpoint ?? model.baseUrl })),
+	},
+});
+```
+
+Use `modifyModels` only when the projection must read or change other providers' models.
 
 ## Auth and API key resolution order
 

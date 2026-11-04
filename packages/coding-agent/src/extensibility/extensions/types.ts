@@ -2197,6 +2197,11 @@ export interface ProviderConfig {
 		getApiKey?(credentials: OAuthCredentials): string;
 		/** Optional model rewrite hook for credential-aware routing (e.g., enterprise URLs). */
 		modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
+		/**
+		 * Like `modifyModels`, but receives only this provider's models, and its result replaces only
+		 * them. Registering it does not build the full model catalog. Register one of the two hooks, not both.
+		 */
+		modifyProviderModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
 	};
 	/**
 	 * Async factory that fetches the live model list from the provider endpoint.

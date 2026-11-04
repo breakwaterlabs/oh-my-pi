@@ -213,6 +213,16 @@ interface ConfiguredModelDiscoveryResult {
  */
 type ModifyModelsHook = (models: Model<Api>[], credentials: OAuthCredentials) => Model<Api>[];
 
+/**
+ * A registered projection and what it sees: `catalog` hooks (`oauth.modifyModels`)
+ * receive and may rewrite the whole catalog; `provider` hooks
+ * (`oauth.modifyProviderModels`) receive only the registering provider's rows.
+ */
+interface RuntimeModelModifier {
+	hook: ModifyModelsHook;
+	scope: "catalog" | "provider";
+}
+
 function getDisabledProviderIdsFromSettings(settingsInstance?: Settings): Set<string> {
 	try {
 		return new Set(cfgDisabledProviders.get(settingsInstance ?? settings));
@@ -406,11 +416,11 @@ export class ModelRegistry {
 	// rebuilds that map from models.yml only; runtime entries must survive.
 	#runtimeCommandConfigsByProvider: Map<string, Set<string>> = new Map();
 	// Credential-aware model projections registered via
-	// `registerProvider({ oauth: { modifyModels } })`. Persisted for the same
+	// `registerProvider({ oauth: { modifyModels | modifyProviderModels } })`. Persisted for the same
 	// reason as #runtimeModelOverlays: the overlays hold the *pre-projection*
 	// definitions, so without re-applying the projection every static reload
 	// would silently revert the provider to its unprojected catalog.
-	#runtimeModelModifiers: Map<string, ModifyModelsHook> = new Map();
+	#runtimeModelModifiers: Map<string, RuntimeModelModifier> = new Map();
 	#lastModelModifierWarnings: Map<string, string> = new Map();
 	#runtimeProvidersBySource: Map<string, Set<string>> = new Map();
 	#runtimeProviderSourceByName: Map<string, string> = new Map();
@@ -1403,22 +1413,29 @@ export class ModelRegistry {
 	 * mutation of both the array and its model records before returning, and the
 	 * rows it returns for its own provider are re-materialized through
 	 * `buildModel` so the registry keeps its "every model is built" invariant.
+	 *
+	 * A provider-scoped hook receives only its provider's rows, and only when
+	 * `providerFilter` (a narrowed lookup) includes that provider. Its own rows
+	 * replace the provider's rows where they were; rows it returns for other
+	 * providers are ignored.
 	 */
-	#applyRuntimeModelModifiers(models: Model<Api>[]): Model<Api>[] {
+	#applyRuntimeModelModifiers(models: Model<Api>[], providerFilter?: ReadonlySet<string>): Model<Api>[] {
 		if (this.#runtimeModelModifiers.size === 0) return models;
 		let projected = models;
-		for (const [providerName, modifyModels] of this.#runtimeModelModifiers) {
+		for (const [providerName, { hook: modifyModels, scope }] of this.#runtimeModelModifiers) {
+			if (scope === "provider" && providerFilter && !providerFilter.has(providerName)) continue;
 			const credential = this.authStorage.credentials.getOAuth(providerName);
 			if (!credential) continue;
 			try {
+				const input = scope === "provider" ? projected.filter(model => model.provider === providerName) : projected;
 				// Clone mutable catalog data, retaining resolver functions as opaque
 				// capabilities. Hooks can then rename models without losing their
 				// request-time credentials or resolving them during catalog reads.
 				const snapshot: Model<Api>[] = structuredClone(
-					projected.map(({ resolveHeaders: _resolveHeaders, ...model }) => model),
+					input.map(({ resolveHeaders: _resolveHeaders, ...model }) => model),
 				);
 				for (let index = 0; index < snapshot.length; index++) {
-					if (projected[index].resolveHeaders) snapshot[index].resolveHeaders = projected[index].resolveHeaders;
+					if (input[index].resolveHeaders) snapshot[index].resolveHeaders = input[index].resolveHeaders;
 				}
 				// A hook owns its provider's rows and may synthesize them outright
 				// (a credential-scoped catalog replacing the registered bootstrap)
@@ -1430,7 +1447,7 @@ export class ModelRegistry {
 				// reader crashes, or an identity left over from a different id.
 				// Rows of other providers pass through untouched; rebuilding a
 				// full catalog on every projection costs more than it can fix.
-				projected = modifyModels(snapshot, credential).map(model => {
+				const hookRows = modifyModels(snapshot, credential).map(model => {
 					const withHeaders =
 						model.resolveHeaders && model.headers
 							? {
@@ -1451,6 +1468,15 @@ export class ModelRegistry {
 							: toModelSpec(withHeaders as Model<Api>),
 					);
 				});
+				if (scope === "provider") {
+					const at = projected.findIndex(model => model.provider === providerName);
+					const others = projected.filter(model => model.provider !== providerName);
+					const own = hookRows.filter(model => model.provider === providerName);
+					const splitAt = at === -1 ? others.length : at;
+					projected = [...others.slice(0, splitAt), ...own, ...others.slice(splitAt)];
+				} else {
+					projected = hookRows;
+				}
 			} catch (error) {
 				this.#warnModelModifierFailure(providerName, error instanceof Error ? error.message : String(error));
 			}
@@ -1527,14 +1553,23 @@ export class ModelRegistry {
 	}
 
 	#composeStaticModels(providerFilter?: ReadonlySet<string>): Model<Api>[] {
-		// A modifier is a whole-catalog transform. Build and project the full catalog
-		// before narrowing a lazy lookup, matching getAll() followed by filtering.
-		const projectFullCatalog = providerFilter !== undefined && this.#runtimeModelModifiers.size > 0;
+		// A whole-catalog modifier may rewrite any provider's rows. Build and project
+		// the full catalog before narrowing a lazy lookup, matching getAll() followed
+		// by filtering. Provider-scoped hooks see only their own rows, so the
+		// composition stays narrowed for them.
+		const projectFullCatalog = providerFilter !== undefined && this.#hasCatalogModifier();
 		const compositionFilter = projectFullCatalog ? undefined : providerFilter;
 		const unprojected = this.#projectBaseModels(this.#composeBaseModels(compositionFilter), compositionFilter);
-		const projected = this.#finalizeModels(this.#applyRuntimeModelModifiers(unprojected));
+		const projected = this.#finalizeModels(this.#applyRuntimeModelModifiers(unprojected, compositionFilter));
 		const selected = projectFullCatalog ? projected.filter(model => providerFilter.has(model.provider)) : projected;
 		return this.#internStaticModels(selected);
+	}
+
+	#hasCatalogModifier(): boolean {
+		for (const modifier of this.#runtimeModelModifiers.values()) {
+			if (modifier.scope === "catalog") return true;
+		}
+		return false;
 	}
 
 	#ensureFullSnapshot(): Model<Api>[] {
@@ -3433,12 +3468,8 @@ export class ModelRegistry {
 				provider => requested.has(provider.toLowerCase()) && isProviderAvailable(provider),
 			),
 		);
-		// Reuse the same provider snapshot as find()/getProviderModels(). The
-		// availability gate above stays live, while catalog invalidation remains
-		// owned by refresh, discovery and runtime provider registration. Whole-
-		// catalog modifiers can inspect live credentials, so keep reprojecting
-		// those rather than extending the lifetime of their output.
-		if (availableProviders.size === 1 && this.#runtimeModelModifiers.size === 0) {
+		// Catalog-wide hooks may change other providers' rows.
+		if (availableProviders.size === 1 && !this.#hasCatalogModifier()) {
 			const models = this.#modelsForProviderLookup(availableProviders.values().next().value!);
 			return kind === "all" ? models.slice() : models.filter(model => modelKind(model) === kind);
 		}
@@ -3922,6 +3953,11 @@ export class ModelRegistry {
 		if (config.streamSimple && !config.api) {
 			throw new Error(`Provider ${providerName}: "api" is required when registering streamSimple.`);
 		}
+		if (config.oauth?.modifyModels && config.oauth.modifyProviderModels) {
+			throw new Error(
+				`Provider ${providerName}: register either oauth.modifyModels or oauth.modifyProviderModels, not both.`,
+			);
+		}
 
 		validateProviderConfiguration(
 			providerName,
@@ -4017,22 +4053,29 @@ export class ModelRegistry {
 			this.#runtimeModelOverlays = this.#runtimeModelOverlays.filter(m => m.provider !== providerName);
 			this.#runtimeModelOverlays.push(...newOverlays);
 
-			// A modifier is explicitly a whole-catalog transform and may throw
-			// based on another provider's models. Preserve registration-time
-			// execution/error reporting by materializing only for this case.
-			if (config.oauth?.modifyModels && !this.#hasFullSnapshot) {
+			const modifier: RuntimeModelModifier | undefined = config.oauth?.modifyModels
+				? { hook: config.oauth.modifyModels, scope: "catalog" }
+				: config.oauth?.modifyProviderModels
+					? { hook: config.oauth.modifyProviderModels, scope: "provider" }
+					: undefined;
+			// A whole-catalog modifier may throw based on another provider's
+			// models. Preserve registration-time execution/error reporting by
+			// materializing only for it; a provider-scoped hook sees only its own
+			// rows and runs when they are first composed.
+			if (modifier?.scope === "catalog" && !this.#hasFullSnapshot) {
 				logger.time(`modelRegistry:materializeModifier:${providerName}`, () => this.#ensureFullSnapshot());
 			}
-			if (config.oauth?.modifyModels) {
-				this.#runtimeModelModifiers.set(providerName, config.oauth.modifyModels);
+			if (modifier) {
+				this.#runtimeModelModifiers.set(providerName, modifier);
 			} else {
 				this.#runtimeModelModifiers.delete(providerName);
 			}
 			if (!this.#hasFullSnapshot) {
 				// Lazy compositions read runtime overlays directly. A whole-catalog
 				// modifier can affect providers beyond its owner, so discard every
-				// provider slice; an ordinary overlay only invalidates its provider.
-				if (config.oauth?.modifyModels) {
+				// provider slice; an ordinary overlay or a provider-scoped hook only
+				// invalidates its provider.
+				if (modifier?.scope === "catalog") {
 					this.#providerLookupSnapshots.clear();
 					this.#internedStaticModels.clear();
 				} else {
@@ -4341,6 +4384,7 @@ export interface ProviderConfigInput {
 		refreshToken?(credentials: OAuthCredentials): Promise<OAuthCredentials>;
 		getApiKey?(credentials: OAuthCredentials): string;
 		modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
+		modifyProviderModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
 	};
 	/**
 	 * Async factory that fetches the live model list from the provider endpoint.

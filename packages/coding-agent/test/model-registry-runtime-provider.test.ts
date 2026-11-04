@@ -13,6 +13,7 @@ import {
 } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
+import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry, type ProviderConfigInput } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { logger, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -1491,6 +1492,118 @@ describe("ModelRegistry runtime provider registration", () => {
 		} finally {
 			warn.mockRestore();
 		}
+	});
+
+	type ProviderModelsHook = NonNullable<NonNullable<ProviderConfigInput["oauth"]>["modifyProviderModels"]>;
+
+	function registerScopedProvider(
+		providerName: string,
+		modifyProviderModels?: ProviderModelsHook,
+		target: ModelRegistry = registry,
+	): void {
+		target.registerProvider(
+			providerName,
+			{
+				api: `custom-${providerName}-api`,
+				baseUrl: "https://example.invalid/",
+				streamSimple,
+				models: [baseModel],
+				oauth: {
+					name: "Scoped OAuth",
+					login: async () => ({ access: "a", refresh: "r", expires: Date.now() + 60_000 }),
+					refreshToken: async credentials => credentials,
+					getApiKey: credentials => credentials.access,
+					modifyProviderModels,
+				},
+			},
+			"ext://oauth",
+		);
+	}
+
+	async function storeScopedCredential(providerName: string): Promise<void> {
+		await authStorage.credentials.set(providerName, {
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+		});
+	}
+
+	test("oauth.modifyProviderModels sees only its provider's rows and skips lookups of other providers", async () => {
+		await storeScopedCredential("scoped-provider");
+		const seen: string[][] = [];
+		registerScopedProvider("scoped-provider", models => {
+			seen.push(models.map(model => model.provider));
+			return models.map(model => ({ ...model, name: `${model.name} (scoped)` }));
+		});
+
+		const [anthropic] = getBundledModels("anthropic");
+		if (!anthropic) throw new Error("Expected an Anthropic model in the fixture catalog");
+		expect(registry.find("anthropic", anthropic.id)?.name).toBe(anthropic.name);
+		expect(seen).toEqual([]);
+
+		expect(registry.find("scoped-provider", baseModel.id)?.name).toBe("Runtime Model (scoped)");
+
+		expect(getProviderModels(registry, "scoped-provider").map(model => model.name)).toEqual([
+			"Runtime Model (scoped)",
+		]);
+		expect(new Set(seen.flat())).toEqual(new Set(["scoped-provider"]));
+	});
+
+	test("oauth.modifyProviderModels replaces its rows in place and cannot add other providers' rows", async () => {
+		await storeScopedCredential("scoped-provider");
+		const key = (model: Model<Api>) => `${model.provider}/${model.id}`;
+		const plain = new ModelRegistry(authStorage, path.join(tempDir, "plain-models.json"), { fetch: offlineFetch });
+		registerScopedProvider("scoped-provider", undefined, plain);
+		registerScopedProvider("later-provider", undefined, plain);
+		const before = plain.getAll().map(key);
+		const ownAt = before.indexOf("scoped-provider/runtime-model");
+		expect(before.indexOf("later-provider/runtime-model")).toBeGreaterThan(ownAt);
+
+		registerScopedProvider("scoped-provider", models => {
+			const [first] = models;
+			if (!first) throw new Error("Expected the provider's bootstrap model in the hook");
+			return [
+				{ ...first, name: "Renamed" },
+				{ ...first, id: "runtime-model-2", name: "Added" },
+				{ ...first, provider: "anthropic", id: "injected-by-scoped-hook" },
+			];
+		});
+		registerScopedProvider("later-provider");
+
+		const after = registry.getAll();
+		const others = (keys: string[]) => keys.filter(entry => !entry.startsWith("scoped-provider/"));
+		expect(others(after.map(key))).toEqual(others(before));
+		expect(after.slice(ownAt, ownAt + 3).map(model => `${key(model)}:${model.name}`)).toEqual([
+			"scoped-provider/runtime-model:Renamed",
+			"scoped-provider/runtime-model-2:Added",
+			"later-provider/runtime-model:Runtime Model",
+		]);
+		expect(registry.find("anthropic", "injected-by-scoped-hook")).toBeUndefined();
+	});
+
+	test("registering both oauth.modifyModels and oauth.modifyProviderModels throws before registering anything", () => {
+		expect(() =>
+			registry.registerProvider(
+				"both-hooks-provider",
+				{
+					api: "custom-both-hooks-api",
+					baseUrl: "https://example.invalid/",
+					streamSimple,
+					models: [baseModel],
+					oauth: {
+						name: "Both OAuth",
+						login: async () => ({ access: "a", refresh: "r", expires: Date.now() + 60_000 }),
+						modifyModels: models => models,
+						modifyProviderModels: models => models,
+					},
+				},
+				"ext://oauth",
+			),
+		).toThrow();
+		expect(getCustomApi("custom-both-hooks-api")).toBeUndefined();
+		expect(getOAuthProviders().some(provider => provider.id === "both-hooks-provider")).toBe(false);
+		expect(registry.find("both-hooks-provider", baseModel.id)).toBeUndefined();
 	});
 
 	test("resolves a configured provider base URL before any model is discovered", () => {
