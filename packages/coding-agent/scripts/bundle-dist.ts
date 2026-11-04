@@ -10,6 +10,7 @@ import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
 const packageDir = path.join(import.meta.dir, "..");
 const defaultOutDir = path.join(packageDir, "dist");
 const shebang = "#!/usr/bin/env bun\n";
+const chunkDirName = "chunks";
 // Remove old inline-viewer sidecars left in an existing output directory.
 const obsoleteHtmlExportAssetPattern =
 	/^(?:template-[^.]+\.(?:css|html|js)|tool-views\.generated-[^.]+\.js|(?:marked|highlight)\.min-[^.]+\.js)$/;
@@ -72,8 +73,9 @@ async function cleanBundleOutputs(outDir: string): Promise<void> {
 		if (isEnoent(err)) return;
 		throw err;
 	}
-	await Promise.all(
-		entries
+	await Promise.all([
+		fs.rm(path.join(outDir, chunkDirName), { recursive: true, force: true }),
+		...entries
 			.filter(
 				entry =>
 					entry === "cli.js" ||
@@ -85,7 +87,7 @@ async function cleanBundleOutputs(outDir: string): Promise<void> {
 					obsoleteHtmlExportAssetPattern.test(entry),
 			)
 			.map(entry => fs.rm(path.join(outDir, entry), { force: true })),
-	);
+	]);
 }
 
 /** Builds the npm CLI bundle into `outDir`; release scripts use the package `dist` directory by default. */
@@ -110,6 +112,12 @@ export async function bundleDist(outDir: string = defaultOutDir): Promise<void> 
 			entrypoints: [path.join(packageDir, "src/cli.ts")],
 			outdir: outDir,
 			target: "bun",
+			// Split so `--version` and each worker re-entry load only the chunks they import instead of
+			// parsing the whole CLI. Discovery entry chunks can share a hash; include their source names to
+			// avoid collisions.
+			splitting: true,
+			format: "esm",
+			naming: { chunk: `${chunkDirName}/[name]-[hash].[ext]` },
 			plugins: [createJsonParsePlugin(), await createLegacyPiVirtualModulePlugin(), inlineNativeNoticesPlugin],
 			external: [...ALWAYS_EXTERNAL, ...RUNTIME_EXTERNAL],
 			define: {

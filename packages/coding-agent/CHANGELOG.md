@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The npm-installed CLI starts help, version queries, and worker subprocesses without loading the whole application.
 ### Added
 
 - Added the default-off `providers.openaiResponsesWebsockets` setting for catalog-supported standard Responses models, independently of Codex; model/request `false` always disables it ([#17354](https://github.com/can1357/oh-my-pi/pull/17354) by [@TatsukiMeng](https://github.com/TatsukiMeng))

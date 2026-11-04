@@ -894,23 +894,9 @@ const PACKAGE_IMPORT_EXCLUDED = Symbol("packageImportExcluded");
 // vendor TypeBox directly.
 const TYPEBOX_SPECIFIER_FILTER = /^(?:@sinclair\/typebox|typebox)$/;
 
-// Compat-shim path resolution. In compiled-binary mode every bundled surface
-// is served through the `omp-legacy-pi-bundled:` virtual namespace (see the
-// bundled-module block above) — bunfs paths are unreachable on Bun 1.3.14+, so the
-// pre-#3423 helpers that derived `/$bunfs/root/...` paths from
-// `import.meta.dir` are gone. Dev / source-link / installed-package modes
-// still need a real filesystem path for the source shims, which
-// `sourceShimPath` computes either from the npm prebuilt `dist/cli.js`
-// bundle (`PI_BUNDLED=true`) or directly from the monorepo source tree.
+// Bundled modes use the virtual namespace; source mode needs filesystem shim paths.
 
-/**
- * Compute the package root for the npm prebuilt `dist/cli.js` bundle.
- *
- * `bundle-dist.ts` defines `process.env.PI_BUNDLED="true"`; after bundling,
- * `import.meta.dir` points at `<package>/dist`. Do not resolve the package via
- * bare `@oh-my-pi/pi-coding-agent` here: from a global install Bun can pick an
- * older cache entry, recreating mixed-runtime plugin loading.
- */
+/** Do not resolve by package name: global installs can select an older cached runtime. */
 export function __computeBundledSelfPackageRoot(metaDir: string, pathImpl: typeof path = path): string {
 	const normalizedMetaDir = pathImpl.normalize(metaDir);
 	if (pathImpl.basename(normalizedMetaDir) === "dist") {
